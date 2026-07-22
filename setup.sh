@@ -33,6 +33,8 @@ case "$CHOICE" in
         wget -q --show-progress -O "$TMP_DIR/int_linux_wallpaper_engine_amd64.deb" \
             "https://github.com/slynobody/linux_wallpaper_engine__precompiled/releases/download/0.8/int_linux_wallpaper_engine_amd64.deb"
 
+        echo "Installing runtime dependencies..."
+        sudo apt install -y libkissfft-float131 2>/dev/null || sudo apt install -y libkissfft-float 2>/dev/null || true
         echo "Installing (requires sudo)..."
         sudo apt install -y "$TMP_DIR/int_linux_wallpaper_engine_amd64.deb"
         rm -rf "$TMP_DIR"
@@ -50,7 +52,8 @@ case "$CHOICE" in
             libsdl2-dev liblz4-dev libglm-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
             libxxf86vm-dev libmpv-dev mpv libmpv2 \
-            libpulse-dev libpulse0 libfftw3-dev libfreetype-dev
+            libpulse-dev libpulse0 libfftw3-dev libfreetype-dev \
+            libkissfft-dev 2>/dev/null || true
 
         echo "Cloning linux-wallpaperengine..."
         TMP_DIR=$(mktemp -d)

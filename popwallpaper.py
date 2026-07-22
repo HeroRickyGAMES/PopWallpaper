@@ -119,21 +119,45 @@ class WallpaperManager:
     _MPVPAPER_BIN = None
     _processes = {}
 
+    _WPE_ENV = None  # cached env with LD_LIBRARY_PATH for WPE
+
+    @classmethod
+    def _get_wpe_env(cls):
+        """Return an env dict with LD_LIBRARY_PATH set for WPE."""
+        if cls._WPE_ENV is not None:
+            return cls._WPE_ENV
+        env = os.environ.copy()
+        wpe_lib = "/opt/linux-wallpaperengine"
+        extra = [wpe_lib]
+        for d in ["/usr/local/lib", "/usr/lib"]:
+            if os.path.isdir(d):
+                extra.append(d)
+        existing = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = ":".join(extra) + (":" + existing if existing else "")
+        cls._WPE_ENV = env
+        return env
+
     @classmethod
     def _find_wpe(cls):
         if cls._WPE_BIN:
             return cls._WPE_BIN
         candidates = [shutil.which("linux-wallpaperengine"),
                       "/opt/linux-wallpaperengine/linux-wallpaperengine",
-                      "/usr/local/bin/wpe/linux-wallpaperengine"]
+                      "/usr/local/bin/wpe/linux-wallpaperengine",
+                      "/usr/local/bin/linux-wallpaperengine"]
+        wpe_env = cls._get_wpe_env()
         for p in candidates:
             if p and os.path.isfile(p) and os.access(p, os.X_OK):
                 try:
-                    subprocess.run([p, "--help"], capture_output=True, timeout=3)
-                    cls._WPE_BIN = p
-                    return p
+                    result = subprocess.run([p, "--help"], capture_output=True, timeout=5, env=wpe_env)
+                    if result.returncode == 0 or b"linux-wallpaperengine" in (result.stdout + result.stderr):
+                        cls._WPE_BIN = p
+                        return p
                 except Exception:
                     continue
+                # Binary exists but --help fails — still cache it, launch will use LD_LIBRARY_PATH
+                cls._WPE_BIN = p
+                return p
         return None
 
     @classmethod
@@ -193,6 +217,7 @@ class WallpaperManager:
             if not wpe:
                 return False
             targets_wpe = targets if targets else WallpaperManager._get_monitors()
+            wpe_env = WallpaperManager._get_wpe_env()
             for m in targets_wpe:
                 args = ["--screen-root", m]
                 if audio_monitor and m != audio_monitor:
@@ -203,7 +228,8 @@ class WallpaperManager:
                 p = subprocess.Popen(
                     [wpe] + args,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=True
+                    start_new_session=True,
+                    env=wpe_env
                 )
                 WallpaperManager._processes.setdefault(m, []).append(p)
         return True
