@@ -7,6 +7,7 @@ Supports video, scene, and web wallpapers via linux-wallpaperengine
 import os
 import sys
 import json
+import time
 import shutil
 import subprocess
 import customtkinter as ctk
@@ -155,7 +156,7 @@ class WallpaperManager:
                 pass
 
     @staticmethod
-    def apply_wallpaper(wallpaper, monitor="*", audio_monitor=True):
+    def apply_wallpaper(wallpaper, monitor="*", audio_monitor=None):
         targets = []
         if monitor and monitor != "*":
             targets = [monitor]
@@ -181,7 +182,7 @@ class WallpaperManager:
             targets_wpe = targets if targets else WallpaperManager._get_monitors()
             for m in targets_wpe:
                 args = ["--screen-root", m]
-                if not audio_monitor:
+                if audio_monitor and m != audio_monitor:
                     args.append("--silent")
                 args.append(wallpaper.folder_path)
                 p = subprocess.Popen(
@@ -198,8 +199,8 @@ class WallpaperManager:
         monitors = WallpaperManager._get_monitors()
         wallpapers = WallpaperScanner.scan_wallpapers()
         wallpaper_by_id = {w.workshop_id: w for w in wallpapers}
+        audio_monitor = config.get("audio_monitor")
 
-        audio_used = False
         for entry in config.get("wallpapers", []):
             wp = wallpaper_by_id.get(entry.get("workshop_id"))
             if not wp:
@@ -207,8 +208,7 @@ class WallpaperManager:
             monitor = entry.get("monitor", "*")
             if monitor != "*" and monitor not in monitors:
                 continue
-            WallpaperManager.apply_wallpaper(wp, monitor, audio_monitor=not audio_used)
-            audio_used = True
+            WallpaperManager.apply_wallpaper(wp, monitor, audio_monitor=audio_monitor)
 
     @staticmethod
     def _get_wallpaper_sink_inputs():
@@ -337,6 +337,7 @@ class PopWallpaperApp(ctk.CTk):
         self.current_wallpaper = None
         self.is_muted = False
         self._ready = False
+        self._focus_after_id = None
         self.monitors = WallpaperManager._get_monitors()
         self.create_ui()
 
@@ -402,6 +403,20 @@ class PopWallpaperApp(ctk.CTk):
         )
         self.monitor_menu.pack(fill="x", padx=5)
 
+        audio_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        audio_frame.grid(row=4, column=0, padx=10, pady=(0, 5), sticky="ew")
+
+        ctk.CTkLabel(audio_frame, text="Audio Monitor:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
+        audio_names = ["None"] + self.monitors
+        saved_audio = self.config.get("audio_monitor", self.monitors[0] if self.monitors else "None")
+        self.audio_var = ctk.StringVar(value=saved_audio if saved_audio in audio_names else "None")
+        self.audio_menu = ctk.CTkOptionMenu(
+            audio_frame, variable=self.audio_var,
+            values=audio_names, width=260,
+            command=self._on_audio_monitor_change
+        )
+        self.audio_menu.pack(fill="x", padx=5)
+
         filter_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         filter_frame.grid(row=5, column=0, padx=10, pady=(0, 5), sticky="ew")
 
@@ -451,6 +466,10 @@ class PopWallpaperApp(ctk.CTk):
 
         self.status_bar = ctk.CTkLabel(self, text="Ready", anchor="w")
         self.status_bar.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+
+    def _on_audio_monitor_change(self, value):
+        self.config["audio_monitor"] = value
+        save_config(self.config)
 
     def _toggle_boot(self):
         enabled = self.boot_var.get()
@@ -542,7 +561,8 @@ class PopWallpaperApp(ctk.CTk):
         if self.current_wallpaper:
             monitor_val = self.monitor_var.get()
             monitor = None if monitor_val == "All" else monitor_val
-            if WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor):
+            audio_monitor = self.audio_var.get()
+            if WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor, audio_monitor=audio_monitor):
                 self.status_bar.configure(text=f"Applied: {self.current_wallpaper.title} on {monitor_val}")
                 self.is_muted = False
                 self.update_mute_button()
@@ -578,6 +598,9 @@ class PopWallpaperApp(ctk.CTk):
     def on_focus_in(self, event=None):
         if not self._ready:
             return
+        if self._focus_after_id is not None:
+            self.after_cancel(self._focus_after_id)
+            self._focus_after_id = None
         if self.is_muted:
             WallpaperManager.set_mute(False)
             self.is_muted = False
@@ -586,6 +609,12 @@ class PopWallpaperApp(ctk.CTk):
     def on_focus_out(self, event=None):
         if not self._ready:
             return
+        if self._focus_after_id is not None:
+            self.after_cancel(self._focus_after_id)
+        self._focus_after_id = self.after(500, self._do_mute)
+
+    def _do_mute(self):
+        self._focus_after_id = None
         WallpaperManager.set_mute(True)
         self.is_muted = True
         self.update_mute_button()
