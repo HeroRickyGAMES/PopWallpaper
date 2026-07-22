@@ -214,6 +214,7 @@ class WallpaperManager:
                 if audio_monitor and m != audio_monitor:
                     args.append("--silent")
                 args.append("--fullscreen-pause-only-active")
+                args.append("--maximized-pause-only-active")
                 args.append(wallpaper.folder_path)
                 p = subprocess.Popen(
                     [wpe] + args,
