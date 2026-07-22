@@ -337,17 +337,17 @@ class PopWallpaperApp(ctk.CTk):
         self.current_wallpaper = None
         self.is_muted = False
         self._ready = False
-        self._focus_after_id = None
+        self._poll_focus_id = None
+        self._was_focused = True
         self.monitors = WallpaperManager._get_monitors()
         self.create_ui()
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.bind("<FocusIn>", self.on_focus_in)
-        self.bind("<FocusOut>", self.on_focus_out)
 
         self.check_wpe_installed()
         self.load_wallpapers()
         self._ready = True
+        self._start_focus_poll()
 
     def check_wpe_installed(self):
         if WallpaperManager._find_wpe():
@@ -606,34 +606,29 @@ class PopWallpaperApp(ctk.CTk):
         WallpaperManager.stop()
         self.status_bar.configure(text="Wallpaper stopped")
 
-    def on_focus_in(self, event=None):
-        if not self._ready:
+    def _start_focus_poll(self):
+        self._poll_focus()
+
+    def _poll_focus(self):
+        if not self._ready or not self.winfo_exists():
             return
-        if self._focus_after_id is not None:
-            self.after_cancel(self._focus_after_id)
-            self._focus_after_id = None
+        focused = self.focus_get() is not None
+        if focused and not self._was_focused:
+            self._on_gain_focus()
+        elif not focused and self._was_focused:
+            self._on_lose_focus()
+        self._was_focused = focused
+        self._poll_focus_id = self.after(200, self._poll_focus)
+
+    def _on_gain_focus(self):
         if self.pause_unfocus_var.get():
             WallpaperManager.apply_from_config(self.config)
-        elif self.is_muted:
-            WallpaperManager.set_mute(False)
-            self.is_muted = False
-            self.update_mute_button()
+            self.status_bar.configure(text="Wallpaper resumed")
 
-    def on_focus_out(self, event=None):
-        if not self._ready:
-            return
+    def _on_lose_focus(self):
         if self.pause_unfocus_var.get():
             WallpaperManager.stop()
-            return
-        if self._focus_after_id is not None:
-            self.after_cancel(self._focus_after_id)
-        self._focus_after_id = self.after(500, self._do_mute)
-
-    def _do_mute(self):
-        self._focus_after_id = None
-        WallpaperManager.set_mute(True)
-        self.is_muted = True
-        self.update_mute_button()
+            self.status_bar.configure(text="Wallpaper paused (no focus)")
 
     def on_closing(self):
         self.destroy()
