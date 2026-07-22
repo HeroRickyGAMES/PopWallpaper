@@ -218,11 +218,15 @@ class WallpaperManager:
                 args.append(wallpaper.folder_path)
                 p = subprocess.Popen(
                     [wpe] + args,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                     start_new_session=True,
                     env=wpe_env
                 )
                 WallpaperManager._processes.setdefault(m, []).append(p)
+                time.sleep(1)
+                if p.poll() is not None and p.returncode != 0:
+                    err = p.stderr.read().decode(errors='replace')[:200] if p.stderr else ""
+                    log.error(f"WPE failed on {m}: {err}")
         return True
 
     @staticmethod
@@ -638,11 +642,15 @@ if __name__ == "__main__":
                     monitor_val = self.monitor_var.get()
                     monitor = None if monitor_val == "All" else monitor_val
                     audio_monitor = self.audio_var.get()
-                    if WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor, audio_monitor=audio_monitor):
+                    ok = WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor, audio_monitor=audio_monitor)
+                    if ok:
                         self.status_bar.configure(text=f"Applied: {self.current_wallpaper.title} on {monitor_val}")
                         self._save_to_config(self.current_wallpaper, monitor_val)
                     else:
-                        self.status_bar.configure(text=f"FAILED: {self.current_wallpaper.title}")
+                        hint = ""
+                        if self.current_wallpaper.wallpaper_type != "video" and not WallpaperManager._find_wpe():
+                            hint = " (linux-wallpaperengine not found — run setup.sh)"
+                        self.status_bar.configure(text=f"FAILED: {self.current_wallpaper.title}{hint}")
 
             def _save_to_config(self, wp, monitor_val):
                 wallpapers = self.config.get("wallpapers", [])
