@@ -26,12 +26,13 @@ def truncate_text(text, max_length=40):
 
 
 class Wallpaper:
-    def __init__(self, title, wallpaper_type, folder_path, preview_path=None, media_path=None):
+    def __init__(self, title, wallpaper_type, folder_path, preview_path=None, media_path=None, workshop_id=None):
         self.title = title
         self.wallpaper_type = wallpaper_type
         self.folder_path = folder_path
         self.preview_path = preview_path
         self.media_path = media_path
+        self.workshop_id = workshop_id
 
     @property
     def type_badge(self):
@@ -95,7 +96,7 @@ class WallpaperScanner:
                                     break
                             if media_path:
                                 break
-                wallpapers.append(Wallpaper(title, wp_type, folder_path, preview_path, media_path))
+                wallpapers.append(Wallpaper(title, wp_type, folder_path, preview_path, media_path, workshop_id=folder_name))
             except (json.JSONDecodeError, IOError):
                 continue
         wallpapers.sort(key=lambda w: w.title.lower())
@@ -196,11 +197,11 @@ class WallpaperManager:
         WallpaperManager.stop()
         monitors = WallpaperManager._get_monitors()
         wallpapers = WallpaperScanner.scan_wallpapers()
-        wallpaper_by_title = {w.title: w for w in wallpapers}
+        wallpaper_by_id = {w.workshop_id: w for w in wallpapers}
 
         audio_used = False
         for entry in config.get("wallpapers", []):
-            wp = wallpaper_by_title.get(entry.get("title"))
+            wp = wallpaper_by_id.get(entry.get("workshop_id"))
             if not wp:
                 continue
             monitor = entry.get("monitor", "*")
@@ -552,10 +553,10 @@ class PopWallpaperApp(ctk.CTk):
     def _save_to_config(self, wp, monitor_val):
         wallpapers = self.config.get("wallpapers", [])
         if monitor_val == "All":
-            self.config["wallpapers"] = [{"title": wp.title, "folder_path": wp.folder_path, "monitor": m} for m in self.monitors]
+            self.config["wallpapers"] = [{"workshop_id": wp.workshop_id, "monitor": m} for m in self.monitors]
         else:
             wallpapers = [w for w in wallpapers if w.get("monitor") != monitor_val]
-            wallpapers.append({"title": wp.title, "folder_path": wp.folder_path, "monitor": monitor_val})
+            wallpapers.append({"workshop_id": wp.workshop_id, "monitor": monitor_val})
             self.config["wallpapers"] = wallpapers
         save_config(self.config)
 
@@ -585,10 +586,9 @@ class PopWallpaperApp(ctk.CTk):
     def on_focus_out(self, event=None):
         if not self._ready:
             return
-        if self.focus_get() is None:
-            WallpaperManager.set_mute(True)
-            self.is_muted = True
-            self.update_mute_button()
+        WallpaperManager.set_mute(True)
+        self.is_muted = True
+        self.update_mute_button()
 
     def on_closing(self):
         self.destroy()
