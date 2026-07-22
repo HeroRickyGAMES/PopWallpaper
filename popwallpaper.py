@@ -154,7 +154,7 @@ class WallpaperManager:
                 pass
 
     @staticmethod
-    def apply_wallpaper(wallpaper, monitor="*"):
+    def apply_wallpaper(wallpaper, monitor="*", audio_monitor=True):
         targets = []
         if monitor and monitor != "*":
             targets = [monitor]
@@ -178,9 +178,9 @@ class WallpaperManager:
             if not wpe:
                 return False
             targets_wpe = targets if targets else WallpaperManager._get_monitors()
-            for i, m in enumerate(targets_wpe):
+            for m in targets_wpe:
                 args = ["--screen-root", m]
-                if i > 0:
+                if not audio_monitor:
                     args.append("--silent")
                 args.append(wallpaper.folder_path)
                 p = subprocess.Popen(
@@ -193,10 +193,12 @@ class WallpaperManager:
 
     @staticmethod
     def apply_from_config(config):
+        WallpaperManager.stop()
         monitors = WallpaperManager._get_monitors()
-        wallpapers = {w.folder_path: w for w in WallpaperScanner.scan_wallpapers()}
-        wallpaper_by_title = {w.title: w for w in wallpapers.values()}
+        wallpapers = WallpaperScanner.scan_wallpapers()
+        wallpaper_by_title = {w.title: w for w in wallpapers}
 
+        audio_used = False
         for entry in config.get("wallpapers", []):
             wp = wallpaper_by_title.get(entry.get("title"))
             if not wp:
@@ -204,7 +206,8 @@ class WallpaperManager:
             monitor = entry.get("monitor", "*")
             if monitor != "*" and monitor not in monitors:
                 continue
-            WallpaperManager.apply_wallpaper(wp, monitor)
+            WallpaperManager.apply_wallpaper(wp, monitor, audio_monitor=not audio_used)
+            audio_used = True
 
     @staticmethod
     def _get_wallpaper_sink_inputs():
@@ -272,6 +275,12 @@ class WallpaperManager:
                 except Exception:
                     pass
         WallpaperManager._processes.clear()
+        subprocess.run(['pkill', '-x', 'mpv'], capture_output=True)
+        subprocess.run(['pkill', '-x', 'mpvpaper'], capture_output=True)
+        result = subprocess.run(['pgrep', '-f', 'linux-wallpaperengine'], capture_output=True, text=True)
+        for pid in result.stdout.strip().split():
+            if pid.isdigit():
+                subprocess.run(['kill', '-9', pid], capture_output=True)
         try:
             os.remove('/tmp/mpvpaper-ipc')
         except OSError:

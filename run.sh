@@ -21,9 +21,9 @@ fi
 # Activate virtual environment and run
 if [ -d "$SCRIPT_DIR/venv" ]; then
     source "$SCRIPT_DIR/venv/bin/activate"
-    python3 "$SCRIPT_DIR/popwallpaper.py"
+    python3 "$SCRIPT_DIR/popwallpaper.py" "$@"
 else
     # Fallback: try running directly
     cd "$SCRIPT_DIR"
-    python3 popwallpaper.py
+    python3 popwallpaper.py "$@"
 fi
