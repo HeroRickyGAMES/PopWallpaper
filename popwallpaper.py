@@ -8,7 +8,6 @@ import os
 import sys
 import json
 import time
-import signal
 import shutil
 import subprocess
 import customtkinter as ctk
@@ -109,7 +108,6 @@ class WallpaperManager:
     _WPE_BIN = None
     _MPVPAPER_BIN = None
     _processes = {}
-    _paused = False
 
     @classmethod
     def _find_wpe(cls):
@@ -186,6 +184,7 @@ class WallpaperManager:
                 args = ["--screen-root", m]
                 if audio_monitor and m != audio_monitor:
                     args.append("--silent")
+                args.append("--fullscreen-pause-only-active")
                 args.append(wallpaper.folder_path)
                 p = subprocess.Popen(
                     [wpe] + args,
@@ -278,7 +277,6 @@ class WallpaperManager:
                 except Exception:
                     pass
         WallpaperManager._processes.clear()
-        WallpaperManager._paused = False
         subprocess.run(['pkill', '-x', 'mpv'], capture_output=True)
         subprocess.run(['pkill', '-x', 'mpvpaper'], capture_output=True)
         result = subprocess.run(['pgrep', '-f', 'linux-wallpaperengine'], capture_output=True, text=True)
@@ -289,55 +287,6 @@ class WallpaperManager:
             os.remove('/tmp/mpvpaper-ipc')
         except OSError:
             pass
-
-    @staticmethod
-    def _get_all_pids():
-        pids = set()
-        for monitor, procs in WallpaperManager._processes.items():
-            for p in procs:
-                try:
-                    if p.poll() is None:
-                        pids.add(p.pid)
-                except Exception:
-                    pass
-        try:
-            result = subprocess.run(['pgrep', '-f', 'linux-wallpaperengine'], capture_output=True, text=True)
-            for pid in result.stdout.strip().split():
-                if pid.isdigit():
-                    pids.add(int(pid))
-            result2 = subprocess.run(['pgrep', '-x', 'mpv'], capture_output=True, text=True)
-            for pid in result2.stdout.strip().split():
-                if pid.isdigit():
-                    pids.add(int(pid))
-        except Exception:
-            pass
-        return pids
-
-    @staticmethod
-    def pause():
-        if WallpaperManager._paused:
-            return
-        for pid in WallpaperManager._get_all_pids():
-            try:
-                os.kill(pid, signal.SIGSTOP)
-            except (ProcessLookupError, OSError):
-                pass
-        WallpaperManager._paused = True
-
-    @staticmethod
-    def resume():
-        if not WallpaperManager._paused:
-            return
-        for pid in WallpaperManager._get_all_pids():
-            try:
-                os.kill(pid, signal.SIGCONT)
-            except (ProcessLookupError, OSError):
-                pass
-        WallpaperManager._paused = False
-
-    @staticmethod
-    def is_paused():
-        return WallpaperManager._paused
 
 
 def load_config():
@@ -387,12 +336,7 @@ class PopWallpaperApp(ctk.CTk):
         self.config = load_config()
         self.wallpapers = []
         self.current_wallpaper = None
-        self.is_muted = False
         self._ready = False
-        self._poll_focus_id = None
-        self._was_focused = True
-        self._focus_check_proc = None
-        self._focus_check_start = 0
         self.monitors = WallpaperManager._get_monitors()
         self.create_ui()
 
@@ -401,7 +345,6 @@ class PopWallpaperApp(ctk.CTk):
         self.check_wpe_installed()
         self.load_wallpapers()
         self._ready = True
-        self._start_focus_poll()
 
     def check_wpe_installed(self):
         if WallpaperManager._find_wpe():
@@ -431,19 +374,12 @@ class PopWallpaperApp(ctk.CTk):
         controls_frame.grid_columnconfigure(0, weight=1)
         controls_frame.grid_columnconfigure(1, weight=1)
 
-        self.mute_btn = ctk.CTkButton(
-            controls_frame, text="🔊 Unmuted",
-            fg_color="#2b8a3e", hover_color="#237032",
-            command=self.toggle_mute
-        )
-        self.mute_btn.grid(row=0, column=0, padx=(5, 2), pady=5, sticky="ew")
-
         self.stop_btn = ctk.CTkButton(
             controls_frame, text="⏹ Stop",
             fg_color="#a11d1d", hover_color="#7a1616",
             command=self.stop_wallpaper
         )
-        self.stop_btn.grid(row=0, column=1, padx=(2, 5), pady=5, sticky="ew")
+        self.stop_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
         monitor_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         monitor_frame.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
@@ -491,13 +427,6 @@ class PopWallpaperApp(ctk.CTk):
         )
         self.boot_check.grid(row=7, column=0, padx=20, pady=(5, 10), sticky="w")
 
-        self.pause_unfocus_var = ctk.BooleanVar(value=self.config.get("pause_on_unfocus", False))
-        self.pause_check = ctk.CTkCheckBox(
-            self.sidebar, text="Pause without focus",
-            variable=self.pause_unfocus_var, command=self._toggle_pause_unfocus
-        )
-        self.pause_check.grid(row=8, column=0, padx=20, pady=(0, 10), sticky="w")
-
         self.main_panel = ctk.CTkFrame(self, corner_radius=0)
         self.main_panel.grid(row=0, column=1, sticky="nsew")
         self.main_panel.grid_rowconfigure(1, weight=1)
@@ -530,10 +459,6 @@ class PopWallpaperApp(ctk.CTk):
 
     def _on_audio_monitor_change(self, value):
         self.config["audio_monitor"] = value
-        save_config(self.config)
-
-    def _toggle_pause_unfocus(self):
-        self.config["pause_on_unfocus"] = self.pause_unfocus_var.get()
         save_config(self.config)
 
     def _toggle_boot(self):
@@ -629,8 +554,6 @@ class PopWallpaperApp(ctk.CTk):
             audio_monitor = self.audio_var.get()
             if WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor, audio_monitor=audio_monitor):
                 self.status_bar.configure(text=f"Applied: {self.current_wallpaper.title} on {monitor_val}")
-                self.is_muted = False
-                self.update_mute_button()
                 self._save_to_config(self.current_wallpaper, monitor_val)
             else:
                 self.status_bar.configure(text=f"FAILED: {self.current_wallpaper.title}")
@@ -645,61 +568,9 @@ class PopWallpaperApp(ctk.CTk):
             self.config["wallpapers"] = wallpapers
         save_config(self.config)
 
-    def toggle_mute(self):
-        WallpaperManager.toggle_mute()
-        self.is_muted = not self.is_muted
-        self.update_mute_button()
-
-    def update_mute_button(self):
-        if self.is_muted:
-            self.mute_btn.configure(text="🔇 Muted", fg_color="#a11d1d", hover_color="#7a1616")
-        else:
-            self.mute_btn.configure(text="🔊 Unmuted", fg_color="#2b8a3e", hover_color="#237032")
-
     def stop_wallpaper(self):
         WallpaperManager.stop()
         self.status_bar.configure(text="Wallpaper stopped")
-
-    def _start_focus_poll(self):
-        self._focus_check_proc = None
-        self._poll_focus()
-
-    def _poll_focus(self):
-        if not self._ready or not self.winfo_exists():
-            return
-        if not self.pause_unfocus_var.get():
-            self._poll_focus_id = self.after(500, self._poll_focus)
-            return
-        if self._focus_check_proc is None:
-            self._focus_check_proc = subprocess.Popen(
-                ['xdotool', 'getwindowfocus'],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            self._focus_check_start = time.time()
-        if self._focus_check_proc.poll() is not None:
-            out = self._focus_check_proc.stdout.read().decode().strip()
-            self._focus_check_proc = None
-            focused = bool(out)
-            if focused and self._was_focused != True:
-                self._was_focused = True
-                self._on_gain_focus()
-            elif not focused and self._was_focused != False:
-                self._was_focused = False
-                self._on_lose_focus()
-        elif time.time() - self._focus_check_start > 2:
-            self._focus_check_proc.kill()
-            self._focus_check_proc = None
-        self._poll_focus_id = self.after(100, self._poll_focus)
-
-    def _on_gain_focus(self):
-        WallpaperManager.resume()
-        self.status_bar.configure(text="Wallpaper resumed")
-        self.update_pause_button()
-
-    def _on_lose_focus(self):
-        WallpaperManager.pause()
-        self.status_bar.configure(text="Wallpaper paused (no focus)")
-        self.update_pause_button()
 
     def on_closing(self):
         self.destroy()
