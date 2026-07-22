@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import time
+import signal
 import shutil
 import subprocess
 import customtkinter as ctk
@@ -108,6 +109,7 @@ class WallpaperManager:
     _WPE_BIN = None
     _MPVPAPER_BIN = None
     _processes = {}
+    _paused = False
 
     @classmethod
     def _find_wpe(cls):
@@ -276,6 +278,7 @@ class WallpaperManager:
                 except Exception:
                     pass
         WallpaperManager._processes.clear()
+        WallpaperManager._paused = False
         subprocess.run(['pkill', '-x', 'mpv'], capture_output=True)
         subprocess.run(['pkill', '-x', 'mpvpaper'], capture_output=True)
         result = subprocess.run(['pgrep', '-f', 'linux-wallpaperengine'], capture_output=True, text=True)
@@ -286,6 +289,34 @@ class WallpaperManager:
             os.remove('/tmp/mpvpaper-ipc')
         except OSError:
             pass
+
+    @staticmethod
+    def pause():
+        if WallpaperManager._paused:
+            return
+        for monitor, procs in WallpaperManager._processes.items():
+            for p in procs:
+                try:
+                    os.kill(p.pid, signal.SIGSTOP)
+                except (ProcessLookupError, OSError):
+                    pass
+        WallpaperManager._paused = True
+
+    @staticmethod
+    def resume():
+        if not WallpaperManager._paused:
+            return
+        for monitor, procs in WallpaperManager._processes.items():
+            for p in procs:
+                try:
+                    os.kill(p.pid, signal.SIGCONT)
+                except (ProcessLookupError, OSError):
+                    pass
+        WallpaperManager._paused = False
+
+    @staticmethod
+    def is_paused():
+        return WallpaperManager._paused
 
 
 def load_config():
@@ -612,23 +643,37 @@ class PopWallpaperApp(ctk.CTk):
     def _poll_focus(self):
         if not self._ready or not self.winfo_exists():
             return
-        focused = self.focus_get() is not None
-        if focused and not self._was_focused:
+        if not self.pause_unfocus_var.get():
+            self._poll_focus_id = self.after(500, self._poll_focus)
+            return
+        focused = self._is_app_focused()
+        if focused and self._was_focused != True:
+            self._was_focused = True
             self._on_gain_focus()
-        elif not focused and self._was_focused:
+        elif not focused and self._was_focused != False:
+            self._was_focused = False
             self._on_lose_focus()
-        self._was_focused = focused
-        self._poll_focus_id = self.after(200, self._poll_focus)
+        self._poll_focus_id = self.after(500, self._poll_focus)
+
+    def _is_app_focused(self):
+        try:
+            r = subprocess.run(['xdotool', 'getwindowfocus'], capture_output=True, text=True, timeout=1)
+            out = r.stdout.strip()
+            if not out:
+                return False
+            return True
+        except Exception:
+            return True
 
     def _on_gain_focus(self):
-        if self.pause_unfocus_var.get():
-            WallpaperManager.apply_from_config(self.config)
-            self.status_bar.configure(text="Wallpaper resumed")
+        WallpaperManager.resume()
+        self.status_bar.configure(text="Wallpaper resumed")
+        self.update_pause_button()
 
     def _on_lose_focus(self):
-        if self.pause_unfocus_var.get():
-            WallpaperManager.stop()
-            self.status_bar.configure(text="Wallpaper paused (no focus)")
+        WallpaperManager.pause()
+        self.status_bar.configure(text="Wallpaper paused (no focus)")
+        self.update_pause_button()
 
     def on_closing(self):
         self.destroy()
