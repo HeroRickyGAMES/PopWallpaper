@@ -291,27 +291,48 @@ class WallpaperManager:
             pass
 
     @staticmethod
-    def pause():
-        if WallpaperManager._paused:
-            return
+    def _get_all_pids():
+        pids = set()
         for monitor, procs in WallpaperManager._processes.items():
             for p in procs:
                 try:
-                    os.kill(p.pid, signal.SIGSTOP)
-                except (ProcessLookupError, OSError):
+                    if p.poll() is None:
+                        pids.add(p.pid)
+                except Exception:
                     pass
+        try:
+            result = subprocess.run(['pgrep', '-f', 'linux-wallpaperengine'], capture_output=True, text=True)
+            for pid in result.stdout.strip().split():
+                if pid.isdigit():
+                    pids.add(int(pid))
+            result2 = subprocess.run(['pgrep', '-x', 'mpv'], capture_output=True, text=True)
+            for pid in result2.stdout.strip().split():
+                if pid.isdigit():
+                    pids.add(int(pid))
+        except Exception:
+            pass
+        return pids
+
+    @staticmethod
+    def pause():
+        if WallpaperManager._paused:
+            return
+        for pid in WallpaperManager._get_all_pids():
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except (ProcessLookupError, OSError):
+                pass
         WallpaperManager._paused = True
 
     @staticmethod
     def resume():
         if not WallpaperManager._paused:
             return
-        for monitor, procs in WallpaperManager._processes.items():
-            for p in procs:
-                try:
-                    os.kill(p.pid, signal.SIGCONT)
-                except (ProcessLookupError, OSError):
-                    pass
+        for pid in WallpaperManager._get_all_pids():
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except (ProcessLookupError, OSError):
+                pass
         WallpaperManager._paused = False
 
     @staticmethod
@@ -370,6 +391,8 @@ class PopWallpaperApp(ctk.CTk):
         self._ready = False
         self._poll_focus_id = None
         self._was_focused = True
+        self._focus_check_proc = None
+        self._focus_check_start = 0
         self.monitors = WallpaperManager._get_monitors()
         self.create_ui()
 
@@ -638,6 +661,7 @@ class PopWallpaperApp(ctk.CTk):
         self.status_bar.configure(text="Wallpaper stopped")
 
     def _start_focus_poll(self):
+        self._focus_check_proc = None
         self._poll_focus()
 
     def _poll_focus(self):
@@ -646,24 +670,26 @@ class PopWallpaperApp(ctk.CTk):
         if not self.pause_unfocus_var.get():
             self._poll_focus_id = self.after(500, self._poll_focus)
             return
-        focused = self._is_app_focused()
-        if focused and self._was_focused != True:
-            self._was_focused = True
-            self._on_gain_focus()
-        elif not focused and self._was_focused != False:
-            self._was_focused = False
-            self._on_lose_focus()
-        self._poll_focus_id = self.after(500, self._poll_focus)
-
-    def _is_app_focused(self):
-        try:
-            r = subprocess.run(['xdotool', 'getwindowfocus'], capture_output=True, text=True, timeout=1)
-            out = r.stdout.strip()
-            if not out:
-                return False
-            return True
-        except Exception:
-            return True
+        if self._focus_check_proc is None:
+            self._focus_check_proc = subprocess.Popen(
+                ['xdotool', 'getwindowfocus'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            self._focus_check_start = time.time()
+        if self._focus_check_proc.poll() is not None:
+            out = self._focus_check_proc.stdout.read().decode().strip()
+            self._focus_check_proc = None
+            focused = bool(out)
+            if focused and self._was_focused != True:
+                self._was_focused = True
+                self._on_gain_focus()
+            elif not focused and self._was_focused != False:
+                self._was_focused = False
+                self._on_lose_focus()
+        elif time.time() - self._focus_check_start > 2:
+            self._focus_check_proc.kill()
+            self._focus_check_proc = None
+        self._poll_focus_id = self.after(100, self._poll_focus)
 
     def _on_gain_focus(self):
         WallpaperManager.resume()
