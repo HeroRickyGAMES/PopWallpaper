@@ -11,11 +11,23 @@ import time
 import signal
 import shutil
 import subprocess
+import shlex
+import logging
 
 CONFIG_DIR = os.path.expanduser("~/.config/popwallpaper")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 AUTOSTART_DIR = os.path.expanduser("~/.config/autostart")
 AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, "popwallpaper.desktop")
+
+os.makedirs(CONFIG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(CONFIG_DIR, "boot.log")
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("popwallpaper")
 
 
 def truncate_text(text, max_length=40):
@@ -309,13 +321,15 @@ def set_autostart(enabled):
     if enabled:
         script_path = os.path.abspath(__file__)
         run_sh = os.path.join(os.path.dirname(script_path), "run.sh")
+        exec_line = f'bash -c "sleep 8 && {shlex.quote(run_sh)} --apply-only"'
         content = f"""[Desktop Entry]
 Type=Application
 Name=PopWallpaper
-Exec=bash -c 'sleep 5 && "{run_sh}" --apply-only'
+Exec={exec_line}
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
+X-COSMIC-Autostart-enabled=true
 """
         with open(AUTOSTART_FILE, 'w') as f:
             f.write(content)
@@ -324,17 +338,40 @@ X-GNOME-Autostart-enabled=true
             os.remove(AUTOSTART_FILE)
 
 
+def wait_for_display(timeout=60, interval=3):
+    """Wait until xrandr returns at least one monitor."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        monitors = WallpaperManager._get_monitors()
+        if monitors:
+            log.info(f"Display ready, monitors: {monitors}")
+            return monitors
+        log.info("Waiting for display...")
+        time.sleep(interval)
+    log.warning("Timeout waiting for display, proceeding anyway")
+    return WallpaperManager._get_monitors()
+
+
 def apply_only_mode():
+    log.info("=== apply_only_mode starting ===")
     config = load_config()
     if not config.get("apply_on_boot"):
+        log.info("apply_on_boot is disabled, exiting")
         return
     if not config.get("wallpapers"):
+        log.info("No wallpapers configured, exiting")
         return
+
+    log.info(f"Config: {config}")
+    wait_for_display(timeout=90, interval=3)
     WallpaperManager.apply_from_config(config)
+    log.info("Wallpapers applied, entering monitoring loop")
+
     try:
         signal.pause()
-    except (KeyboardInterrupt, AttributeError):
-        pass
+    except (KeyboardInterrupt, SystemExit):
+        log.info("Shutting down")
+    WallpaperManager.stop()
 
 
 if __name__ == "__main__":
