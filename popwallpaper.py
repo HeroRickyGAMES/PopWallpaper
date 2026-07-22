@@ -11,9 +11,6 @@ import time
 import signal
 import shutil
 import subprocess
-import customtkinter as ctk
-from tkinter import messagebox
-from PIL import Image
 
 CONFIG_DIR = os.path.expanduser("~/.config/popwallpaper")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -109,7 +106,6 @@ class WallpaperManager:
     _WPE_BIN = None
     _MPVPAPER_BIN = None
     _processes = {}
-    _daemon_proc = None
 
     @classmethod
     def _find_wpe(cls):
@@ -187,6 +183,7 @@ class WallpaperManager:
                 if audio_monitor and m != audio_monitor:
                     args.append("--silent")
                 args.append("--fullscreen-pause-only-active")
+                args.append("--maximized-pause-only-active")
                 args.append(wallpaper.folder_path)
                 p = subprocess.Popen(
                     [wpe] + args,
@@ -194,7 +191,6 @@ class WallpaperManager:
                     start_new_session=True
                 )
                 WallpaperManager._processes.setdefault(m, []).append(p)
-        WallpaperManager._ensure_daemon()
         return True
 
     @staticmethod
@@ -272,28 +268,7 @@ class WallpaperManager:
         return False
 
     @staticmethod
-    def _ensure_daemon():
-        if WallpaperManager._daemon_proc and WallpaperManager._daemon_proc.poll() is None:
-            return
-        daemon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pause_daemon.py")
-        WallpaperManager._daemon_proc = subprocess.Popen(
-            [sys.executable, daemon_path],
-            start_new_session=True
-        )
-
-    @staticmethod
-    def _stop_daemon():
-        if WallpaperManager._daemon_proc and WallpaperManager._daemon_proc.poll() is None:
-            WallpaperManager._daemon_proc.terminate()
-            try:
-                WallpaperManager._daemon_proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                WallpaperManager._daemon_proc.kill()
-            WallpaperManager._daemon_proc = None
-
-    @staticmethod
     def stop():
-        WallpaperManager._stop_daemon()
         for monitor, procs in list(WallpaperManager._processes.items()):
             for p in procs:
                 try:
@@ -349,258 +324,6 @@ X-GNOME-Autostart-enabled=true
             os.remove(AUTOSTART_FILE)
 
 
-class PopWallpaperApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("PopWallpaper Manager")
-        self.geometry("1000x600")
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-
-        self.config = load_config()
-        self.wallpapers = []
-        self.current_wallpaper = None
-        self._ready = False
-        self.monitors = WallpaperManager._get_monitors()
-        self.create_ui()
-
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
-
-        self.check_wpe_installed()
-        self.load_wallpapers()
-        self._ready = True
-
-    def check_wpe_installed(self):
-        if WallpaperManager._find_wpe():
-            return
-        self.after(500, lambda: messagebox.showwarning(
-            "linux-wallpaperengine not found",
-            "linux-wallpaperengine is not installed.\n\n"
-            "Scene and Web wallpapers require it.\n"
-            "Run setup.sh or install manually."
-        ))
-
-    def create_ui(self):
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-
-        self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=0)
-        self.sidebar.grid(row=0, column=0, rowspan=2, sticky="nsew")
-        self.sidebar.grid_rowconfigure(1, weight=1)
-
-        ctk.CTkLabel(self.sidebar, text="Wallpapers", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=20, pady=20)
-        self.wallpaper_list = ctk.CTkScrollableFrame(self.sidebar, width=260)
-        self.wallpaper_list.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        ctk.CTkButton(self.sidebar, text="🔄 Refresh List", command=self.load_wallpapers).grid(row=2, column=0, padx=20, pady=(10, 5))
-
-        controls_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        controls_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
-        controls_frame.grid_columnconfigure(0, weight=1)
-        controls_frame.grid_columnconfigure(1, weight=1)
-
-        self.stop_btn = ctk.CTkButton(
-            controls_frame, text="⏹ Stop",
-            fg_color="#a11d1d", hover_color="#7a1616",
-            command=self.stop_wallpaper
-        )
-        self.stop_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-
-        monitor_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        monitor_frame.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
-
-        ctk.CTkLabel(monitor_frame, text="Monitor:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
-        monitor_names = ["All"] + self.monitors
-        self.monitor_var = ctk.StringVar(value=monitor_names[0])
-        self.monitor_menu = ctk.CTkOptionMenu(
-            monitor_frame, variable=self.monitor_var,
-            values=monitor_names, width=260
-        )
-        self.monitor_menu.pack(fill="x", padx=5)
-
-        audio_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        audio_frame.grid(row=5, column=0, padx=10, pady=(0, 5), sticky="ew")
-
-        ctk.CTkLabel(audio_frame, text="Audio Monitor:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
-        audio_names = ["None"] + self.monitors
-        saved_audio = self.config.get("audio_monitor", self.monitors[0] if self.monitors else "None")
-        self.audio_var = ctk.StringVar(value=saved_audio if saved_audio in audio_names else "None")
-        self.audio_menu = ctk.CTkOptionMenu(
-            audio_frame, variable=self.audio_var,
-            values=audio_names, width=260,
-            command=self._on_audio_monitor_change
-        )
-        self.audio_menu.pack(fill="x", padx=5)
-
-        filter_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        filter_frame.grid(row=6, column=0, padx=10, pady=(0, 5), sticky="ew")
-
-        ctk.CTkLabel(filter_frame, text="Filter:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
-        self.filter_var = ctk.StringVar(value="All Types")
-        self.filter_menu = ctk.CTkOptionMenu(
-            filter_frame, variable=self.filter_var,
-            values=["All Types", "🎬 Video", "🎨 Scene", "🌐 Web"],
-            command=lambda _: self.reload_list(),
-            width=260
-        )
-        self.filter_menu.pack(fill="x", padx=5)
-
-        self.boot_var = ctk.BooleanVar(value=self.config.get("apply_on_boot", False))
-        self.boot_check = ctk.CTkCheckBox(
-            self.sidebar, text="Apply on boot",
-            variable=self.boot_var, command=self._toggle_boot
-        )
-        self.boot_check.grid(row=7, column=0, padx=20, pady=(5, 10), sticky="w")
-
-        self.main_panel = ctk.CTkFrame(self, corner_radius=0)
-        self.main_panel.grid(row=0, column=1, sticky="nsew")
-        self.main_panel.grid_rowconfigure(1, weight=1)
-        self.main_panel.grid_columnconfigure(0, weight=1)
-
-        self.title_label = ctk.CTkLabel(
-            self.main_panel, text="Select a wallpaper",
-            font=ctk.CTkFont(size=24, weight="bold"),
-            wraplength=680, justify="center"
-        )
-        self.title_label.grid(row=0, column=0, padx=40, pady=(40, 20), sticky="ew")
-
-        self.preview_frame = ctk.CTkFrame(self.main_panel)
-        self.preview_frame.grid(row=1, column=0, padx=40, pady=20, sticky="nsew")
-        self.preview_frame.grid_rowconfigure(0, weight=1)
-        self.preview_frame.grid_columnconfigure(0, weight=1)
-
-        self.preview_label = ctk.CTkLabel(self.preview_frame, text="No preview available")
-        self.preview_label.grid(row=0, column=0, sticky="nsew")
-
-        self.apply_btn = ctk.CTkButton(
-            self.main_panel, text="Apply Wallpaper",
-            font=ctk.CTkFont(size=18, weight="bold"), height=50,
-            command=self.apply_current_wallpaper, state="disabled"
-        )
-        self.apply_btn.grid(row=2, column=0, padx=40, pady=40)
-
-        self.status_bar = ctk.CTkLabel(self, text="Ready", anchor="w")
-        self.status_bar.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
-
-    def _on_audio_monitor_change(self, value):
-        self.config["audio_monitor"] = value
-        save_config(self.config)
-
-    def _toggle_boot(self):
-        enabled = self.boot_var.get()
-        self.config["apply_on_boot"] = enabled
-        save_config(self.config)
-        set_autostart(enabled)
-
-    def load_wallpapers(self):
-        self.status_bar.configure(text="Scanning...")
-        self.update()
-        self.wallpapers = WallpaperScanner.scan_wallpapers()
-        self.reload_list()
-
-    def reload_list(self):
-        for w in self.wallpaper_list.winfo_children():
-            w.destroy()
-
-        filter_text = self.filter_var.get()
-        filtered = self.wallpapers
-        if filter_text == "🎬 Video":
-            filtered = [w for w in self.wallpapers if w.wallpaper_type == 'video']
-        elif filter_text == "🎨 Scene":
-            filtered = [w for w in self.wallpapers if w.wallpaper_type == 'scene']
-        elif filter_text == "🌐 Web":
-            filtered = [w for w in self.wallpapers if w.wallpaper_type == 'web']
-
-        if not filtered:
-            self.status_bar.configure(text="No wallpapers found" + (f" ({filter_text})" if filter_text != "All Types" else ""))
-            return
-
-        for wp in filtered:
-            frame = ctk.CTkFrame(self.wallpaper_list, fg_color="transparent")
-            frame.pack(fill="x", padx=5, pady=2)
-
-            thumb = None
-            if wp.preview_path and os.path.exists(wp.preview_path):
-                try:
-                    img = Image.open(wp.preview_path)
-                    if img.format == 'GIF':
-                        img.seek(0)
-                        img = img.convert('RGB')
-                    img.thumbnail((50, 50), Image.Resampling.LANCZOS)
-                    thumb = ctk.CTkImage(light_image=img, dark_image=img, size=(50, 50))
-                except:
-                    pass
-
-            display_name = f"{wp.type_badge}  {truncate_text(wp.title, max_length=30)}"
-            btn = ctk.CTkButton(
-                frame, text=display_name, image=thumb, compound="left",
-                anchor="w", height=60 if thumb else 35,
-                command=lambda w=wp: self.select_wallpaper(w)
-            )
-            btn.pack(fill="x")
-
-        self.status_bar.configure(text=f"Found {len(filtered)} wallpapers" + (f" ({filter_text})" if filter_text != "All Types" else ""))
-
-    def select_wallpaper(self, wp):
-        self.current_wallpaper = wp
-        self.title_label.configure(text=f"{wp.type_badge}  {wp.title}")
-        self.apply_btn.configure(state="normal")
-
-        if wp.preview_path and os.path.exists(wp.preview_path):
-            try:
-                img = Image.open(wp.preview_path)
-                if img.format == 'GIF':
-                    img.seek(0)
-                    img = img.convert('RGB')
-                orig_w, orig_h = img.size
-                scale = min(700 / orig_w, 350 / orig_h)
-                new_size = (int(orig_w * scale), int(orig_h * scale))
-                img_resized = img.resize(new_size, Image.Resampling.LANCZOS)
-                self.preview_image = ctk.CTkImage(
-                    light_image=img_resized, dark_image=img_resized, size=new_size
-                )
-                self.preview_label.configure(image=self.preview_image, text="")
-                self.preview_label.update_idletasks()
-                self.preview_label.update()
-            except Exception:
-                self.preview_label.configure(image=None, text="Preview error")
-                self.preview_label.update()
-        else:
-            self.preview_image = None
-            self.preview_label.configure(image=None, text="No preview")
-            self.preview_label.update()
-
-        self.status_bar.configure(text=f"Selected: {wp.title} ({wp.type_badge})")
-
-    def apply_current_wallpaper(self):
-        if self.current_wallpaper:
-            monitor_val = self.monitor_var.get()
-            monitor = None if monitor_val == "All" else monitor_val
-            audio_monitor = self.audio_var.get()
-            if WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor, audio_monitor=audio_monitor):
-                self.status_bar.configure(text=f"Applied: {self.current_wallpaper.title} on {monitor_val}")
-                self._save_to_config(self.current_wallpaper, monitor_val)
-            else:
-                self.status_bar.configure(text=f"FAILED: {self.current_wallpaper.title}")
-
-    def _save_to_config(self, wp, monitor_val):
-        wallpapers = self.config.get("wallpapers", [])
-        if monitor_val == "All":
-            self.config["wallpapers"] = [{"workshop_id": wp.workshop_id, "monitor": m} for m in self.monitors]
-        else:
-            wallpapers = [w for w in wallpapers if w.get("monitor") != monitor_val]
-            wallpapers.append({"workshop_id": wp.workshop_id, "monitor": monitor_val})
-            self.config["wallpapers"] = wallpapers
-        save_config(self.config)
-
-    def stop_wallpaper(self):
-        WallpaperManager.stop()
-        self.status_bar.configure(text="Wallpaper stopped")
-
-    def on_closing(self):
-        WallpaperManager._stop_daemon()
-        self.destroy()
-
-
 def apply_only_mode():
     config = load_config()
     if not config.get("apply_on_boot"):
@@ -608,16 +331,269 @@ def apply_only_mode():
     if not config.get("wallpapers"):
         return
     WallpaperManager.apply_from_config(config)
-    WallpaperManager._ensure_daemon()
     try:
         signal.pause()
     except (KeyboardInterrupt, AttributeError):
-        WallpaperManager._stop_daemon()
+        pass
 
 
 if __name__ == "__main__":
     if "--apply-only" in sys.argv:
         apply_only_mode()
     else:
+        import customtkinter as ctk
+        from tkinter import messagebox
+        from PIL import Image
+
+        class PopWallpaperApp(ctk.CTk):
+            def __init__(self):
+                super().__init__()
+                self.title("PopWallpaper Manager")
+                self.geometry("1000x600")
+                ctk.set_appearance_mode("dark")
+                ctk.set_default_color_theme("blue")
+
+                self.config = load_config()
+                self.wallpapers = []
+                self.current_wallpaper = None
+                self._ready = False
+                self.monitors = WallpaperManager._get_monitors()
+                self.create_ui()
+
+                self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+                self.check_wpe_installed()
+                self.load_wallpapers()
+                self._ready = True
+
+            def check_wpe_installed(self):
+                if WallpaperManager._find_wpe():
+                    return
+                self.after(500, lambda: messagebox.showwarning(
+                    "linux-wallpaperengine not found",
+                    "linux-wallpaperengine is not installed.\n\n"
+                    "Scene and Web wallpapers require it.\n"
+                    "Run setup.sh or install manually."
+                ))
+
+            def create_ui(self):
+                self.grid_columnconfigure(1, weight=1)
+                self.grid_rowconfigure(0, weight=1)
+
+                self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=0)
+                self.sidebar.grid(row=0, column=0, rowspan=2, sticky="nsew")
+                self.sidebar.grid_rowconfigure(1, weight=1)
+
+                ctk.CTkLabel(self.sidebar, text="Wallpapers", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=20, pady=20)
+                self.wallpaper_list = ctk.CTkScrollableFrame(self.sidebar, width=260)
+                self.wallpaper_list.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+                ctk.CTkButton(self.sidebar, text="🔄 Refresh List", command=self.load_wallpapers).grid(row=2, column=0, padx=20, pady=(10, 5))
+
+                controls_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+                controls_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+                controls_frame.grid_columnconfigure(0, weight=1)
+                controls_frame.grid_columnconfigure(1, weight=1)
+
+                self.stop_btn = ctk.CTkButton(
+                    controls_frame, text="⏹ Stop",
+                    fg_color="#a11d1d", hover_color="#7a1616",
+                    command=self.stop_wallpaper
+                )
+                self.stop_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+
+                monitor_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+                monitor_frame.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+                ctk.CTkLabel(monitor_frame, text="Monitor:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
+                monitor_names = ["All"] + self.monitors
+                self.monitor_var = ctk.StringVar(value=monitor_names[0])
+                self.monitor_menu = ctk.CTkOptionMenu(
+                    monitor_frame, variable=self.monitor_var,
+                    values=monitor_names, width=260
+                )
+                self.monitor_menu.pack(fill="x", padx=5)
+
+                audio_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+                audio_frame.grid(row=5, column=0, padx=10, pady=(0, 5), sticky="ew")
+
+                ctk.CTkLabel(audio_frame, text="Audio Monitor:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
+                audio_names = ["None"] + self.monitors
+                saved_audio = self.config.get("audio_monitor", self.monitors[0] if self.monitors else "None")
+                self.audio_var = ctk.StringVar(value=saved_audio if saved_audio in audio_names else "None")
+                self.audio_menu = ctk.CTkOptionMenu(
+                    audio_frame, variable=self.audio_var,
+                    values=audio_names, width=260,
+                    command=self._on_audio_monitor_change
+                )
+                self.audio_menu.pack(fill="x", padx=5)
+
+                filter_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+                filter_frame.grid(row=6, column=0, padx=10, pady=(0, 5), sticky="ew")
+
+                ctk.CTkLabel(filter_frame, text="Filter:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
+                self.filter_var = ctk.StringVar(value="All Types")
+                self.filter_menu = ctk.CTkOptionMenu(
+                    filter_frame, variable=self.filter_var,
+                    values=["All Types", "🎬 Video", "🎨 Scene", "🌐 Web"],
+                    command=lambda _: self.reload_list(),
+                    width=260
+                )
+                self.filter_menu.pack(fill="x", padx=5)
+
+                self.boot_var = ctk.BooleanVar(value=self.config.get("apply_on_boot", False))
+                self.boot_check = ctk.CTkCheckBox(
+                    self.sidebar, text="Apply on boot",
+                    variable=self.boot_var, command=self._toggle_boot
+                )
+                self.boot_check.grid(row=7, column=0, padx=20, pady=(5, 10), sticky="w")
+
+                self.main_panel = ctk.CTkFrame(self, corner_radius=0)
+                self.main_panel.grid(row=0, column=1, sticky="nsew")
+                self.main_panel.grid_rowconfigure(1, weight=1)
+                self.main_panel.grid_columnconfigure(0, weight=1)
+
+                self.title_label = ctk.CTkLabel(
+                    self.main_panel, text="Select a wallpaper",
+                    font=ctk.CTkFont(size=24, weight="bold"),
+                    wraplength=680, justify="center"
+                )
+                self.title_label.grid(row=0, column=0, padx=40, pady=(40, 20), sticky="ew")
+
+                self.preview_frame = ctk.CTkFrame(self.main_panel)
+                self.preview_frame.grid(row=1, column=0, padx=40, pady=20, sticky="nsew")
+                self.preview_frame.grid_rowconfigure(0, weight=1)
+                self.preview_frame.grid_columnconfigure(0, weight=1)
+
+                self.preview_label = ctk.CTkLabel(self.preview_frame, text="No preview available")
+                self.preview_label.grid(row=0, column=0, sticky="nsew")
+
+                self.apply_btn = ctk.CTkButton(
+                    self.main_panel, text="Apply Wallpaper",
+                    font=ctk.CTkFont(size=18, weight="bold"), height=50,
+                    command=self.apply_current_wallpaper, state="disabled"
+                )
+                self.apply_btn.grid(row=2, column=0, padx=40, pady=40)
+
+                self.status_bar = ctk.CTkLabel(self, text="Ready", anchor="w")
+                self.status_bar.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+
+            def _on_audio_monitor_change(self, value):
+                self.config["audio_monitor"] = value
+                save_config(self.config)
+
+            def _toggle_boot(self):
+                enabled = self.boot_var.get()
+                self.config["apply_on_boot"] = enabled
+                save_config(self.config)
+                set_autostart(enabled)
+
+            def load_wallpapers(self):
+                self.status_bar.configure(text="Scanning...")
+                self.update()
+                self.wallpapers = WallpaperScanner.scan_wallpapers()
+                self.reload_list()
+
+            def reload_list(self):
+                for w in self.wallpaper_list.winfo_children():
+                    w.destroy()
+
+                filter_text = self.filter_var.get()
+                filtered = self.wallpapers
+                if filter_text == "🎬 Video":
+                    filtered = [w for w in self.wallpapers if w.wallpaper_type == 'video']
+                elif filter_text == "🎨 Scene":
+                    filtered = [w for w in self.wallpapers if w.wallpaper_type == 'scene']
+                elif filter_text == "🌐 Web":
+                    filtered = [w for w in self.wallpapers if w.wallpaper_type == 'web']
+
+                if not filtered:
+                    self.status_bar.configure(text="No wallpapers found" + (f" ({filter_text})" if filter_text != "All Types" else ""))
+                    return
+
+                for wp in filtered:
+                    frame = ctk.CTkFrame(self.wallpaper_list, fg_color="transparent")
+                    frame.pack(fill="x", padx=5, pady=2)
+
+                    thumb = None
+                    if wp.preview_path and os.path.exists(wp.preview_path):
+                        try:
+                            img = Image.open(wp.preview_path)
+                            if img.format == 'GIF':
+                                img.seek(0)
+                                img = img.convert('RGB')
+                            img.thumbnail((50, 50), Image.Resampling.LANCZOS)
+                            thumb = ctk.CTkImage(light_image=img, dark_image=img, size=(50, 50))
+                        except:
+                            pass
+
+                    display_name = f"{wp.type_badge}  {truncate_text(wp.title, max_length=30)}"
+                    btn = ctk.CTkButton(
+                        frame, text=display_name, image=thumb, compound="left",
+                        anchor="w", height=60 if thumb else 35,
+                        command=lambda w=wp: self.select_wallpaper(w)
+                    )
+                    btn.pack(fill="x")
+
+                self.status_bar.configure(text=f"Found {len(filtered)} wallpapers" + (f" ({filter_text})" if filter_text != "All Types" else ""))
+
+            def select_wallpaper(self, wp):
+                self.current_wallpaper = wp
+                self.title_label.configure(text=f"{wp.type_badge}  {wp.title}")
+                self.apply_btn.configure(state="normal")
+
+                if wp.preview_path and os.path.exists(wp.preview_path):
+                    try:
+                        img = Image.open(wp.preview_path)
+                        if img.format == 'GIF':
+                            img.seek(0)
+                            img = img.convert('RGB')
+                        orig_w, orig_h = img.size
+                        scale = min(700 / orig_w, 350 / orig_h)
+                        new_size = (int(orig_w * scale), int(orig_h * scale))
+                        img_resized = img.resize(new_size, Image.Resampling.LANCZOS)
+                        self.preview_image = ctk.CTkImage(
+                            light_image=img_resized, dark_image=img_resized, size=new_size
+                        )
+                        self.preview_label.configure(image=self.preview_image, text="")
+                        self.preview_label.update_idletasks()
+                        self.preview_label.update()
+                    except Exception:
+                        self.preview_label.configure(image=None, text="Preview error")
+                        self.preview_label.update()
+                else:
+                    self.preview_image = None
+                    self.preview_label.configure(image=None, text="No preview")
+                    self.preview_label.update()
+
+                self.status_bar.configure(text=f"Selected: {wp.title} ({wp.type_badge})")
+
+            def apply_current_wallpaper(self):
+                if self.current_wallpaper:
+                    monitor_val = self.monitor_var.get()
+                    monitor = None if monitor_val == "All" else monitor_val
+                    audio_monitor = self.audio_var.get()
+                    if WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor, audio_monitor=audio_monitor):
+                        self.status_bar.configure(text=f"Applied: {self.current_wallpaper.title} on {monitor_val}")
+                        self._save_to_config(self.current_wallpaper, monitor_val)
+                    else:
+                        self.status_bar.configure(text=f"FAILED: {self.current_wallpaper.title}")
+
+            def _save_to_config(self, wp, monitor_val):
+                wallpapers = self.config.get("wallpapers", [])
+                if monitor_val == "All":
+                    self.config["wallpapers"] = [{"workshop_id": wp.workshop_id, "monitor": m} for m in self.monitors]
+                else:
+                    wallpapers = [w for w in wallpapers if w.get("monitor") != monitor_val]
+                    wallpapers.append({"workshop_id": wp.workshop_id, "monitor": monitor_val})
+                    self.config["wallpapers"] = wallpapers
+                save_config(self.config)
+
+            def stop_wallpaper(self):
+                WallpaperManager.stop()
+                self.status_bar.configure(text="Wallpaper stopped")
+
+            def on_closing(self):
+                self.destroy()
+
         app = PopWallpaperApp()
         app.mainloop()
