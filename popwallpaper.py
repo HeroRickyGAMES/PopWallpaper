@@ -1,292 +1,602 @@
 #!/usr/bin/env python3
 """
 PopWallpaper - Wallpaper Engine Manager for Pop!_OS
-Integración con lanzador.sh para persistencia total
+Supports video, scene, and web wallpapers via linux-wallpaperengine
 """
 
 import os
+import sys
 import json
+import shutil
 import subprocess
 import customtkinter as ctk
 from tkinter import messagebox
-from PIL import Image, ImageTk
+from PIL import Image
+
+CONFIG_DIR = os.path.expanduser("~/.config/popwallpaper")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+AUTOSTART_DIR = os.path.expanduser("~/.config/autostart")
+AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, "popwallpaper.desktop")
+
 
 def truncate_text(text, max_length=40):
-    """Trunca texto y agrega ... si excede el largo máximo"""
     if len(text) > max_length:
-        return text[:max_length-3] + "..."
+        return text[:max_length - 3] + "..."
     return text
 
+
 class Wallpaper:
-    """Represents a wallpaper from Steam Workshop"""
-    def __init__(self, title, file_path, preview_path, folder_path):
+    def __init__(self, title, wallpaper_type, folder_path, preview_path=None, media_path=None):
         self.title = title
-        self.file_path = file_path
-        self.preview_path = preview_path
+        self.wallpaper_type = wallpaper_type
         self.folder_path = folder_path
+        self.preview_path = preview_path
+        self.media_path = media_path
+
+    @property
+    def type_badge(self):
+        return {'video': '🎬 Video', 'scene': '🎨 Scene', 'web': '🌐 Web'}.get(self.wallpaper_type, self.wallpaper_type)
+
 
 class WallpaperScanner:
-    """Scans Steam Workshop directory"""
-    
-    # Rutas posibles de Steam
     WORKSHOP_PATHS = [
         os.path.expanduser("~/.steam/debian-installation/steamapps/workshop/content/431960"),
         os.path.expanduser("~/.local/share/Steam/steamapps/workshop/content/431960"),
         os.path.expanduser("~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/workshop/content/431960"),
     ]
-    VALID_EXTENSIONS = {'.mp4', '.webm'}
-    
+
     @classmethod
     def get_workshop_path(cls):
         for path in cls.WORKSHOP_PATHS:
             if os.path.exists(path):
                 return path
         return cls.WORKSHOP_PATHS[0]
-    
+
+    @classmethod
+    def _find_preview(cls, folder_path):
+        for ext in ['preview.jpg', 'preview.png', 'preview.gif', 'preview.jpeg']:
+            p = os.path.join(folder_path, ext)
+            if os.path.exists(p):
+                return p
+        return None
+
     @classmethod
     def scan_wallpapers(cls):
         wallpapers = []
         workshop_path = cls.get_workshop_path()
-        
         if not os.path.exists(workshop_path):
             return wallpapers
-        
+
         for folder_name in os.listdir(workshop_path):
             folder_path = os.path.join(workshop_path, folder_name)
-            if not os.path.isdir(folder_path): continue
-            
+            if not os.path.isdir(folder_path):
+                continue
             project_json = os.path.join(folder_path, "project.json")
-            if not os.path.exists(project_json): continue
-            
+            if not os.path.exists(project_json):
+                continue
             try:
                 with open(project_json, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                
-                # Filtrar escenas y webs, solo queremos videos
-                if data.get('type', '').lower() in ['scene', 'web']: continue
-                
+                wp_type = data.get('type', '').lower()
                 title = data.get('title', f'Untitled ({folder_name})')
-                file_name = data.get('file', '')
-                if not file_name: continue
-                
-                # Verificar extensión de video
-                file_ext = os.path.splitext(file_name)[1].lower()
-                if file_ext not in cls.VALID_EXTENSIONS: continue
-                
-                file_path = os.path.join(folder_path, file_name)
-                if not os.path.exists(file_path): continue
-                
-                # ✅ FIX: Buscar preview en múltiples formatos (jpg, png, gif, jpeg)
-                preview_path = None
-                for ext in ['preview.jpg', 'preview.png', 'preview.gif', 'preview.jpeg']:
-                    potential_preview = os.path.join(folder_path, ext)
-                    if os.path.exists(potential_preview):
-                        preview_path = potential_preview
-                        break
-                
-                wallpapers.append(Wallpaper(title, file_path, preview_path, folder_path))
-                
+                preview_path = cls._find_preview(folder_path)
+                media_path = None
+                if wp_type == 'video':
+                    video_file = data.get('file', '')
+                    if video_file:
+                        candidate = os.path.join(folder_path, video_file)
+                        if os.path.exists(candidate):
+                            media_path = candidate
+                    if not media_path:
+                        for ext in ['.mp4', '.webm', '.avi', '.mkv']:
+                            for f in os.listdir(folder_path):
+                                if f.lower().endswith(ext):
+                                    media_path = os.path.join(folder_path, f)
+                                    break
+                            if media_path:
+                                break
+                wallpapers.append(Wallpaper(title, wp_type, folder_path, preview_path, media_path))
             except (json.JSONDecodeError, IOError):
                 continue
-        
         wallpapers.sort(key=lambda w: w.title.lower())
         return wallpapers
 
-class WallpaperManager:
-    """Gestiona la aplicación de fondos usando el script externo"""
-    
-    @staticmethod
-    def apply_wallpaper(video_path):
-        """
-        Delega la ejecución al script 'lanzador.sh' para que el fondo
-        sea independiente de esta aplicación (persistencia total).
-        """
-        try:
-            # Buscamos lanzador.sh en la misma carpeta que este archivo
-            launcher_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lanzador.sh")
-            
-            if not os.path.exists(launcher_path):
-                messagebox.showerror("Error", f"No se encontró el archivo:\n{launcher_path}\n\nAsegúrate de haberlo creado.")
-                return False
 
-            # Ejecutamos el script pasando la ruta del video
-            subprocess.Popen([launcher_path, video_path])
-            return True
-        except Exception as e:
-            print(f"Error crítico lanzando script: {e}")
-            return False
+class WallpaperManager:
+    _WPE_BIN = None
+    _MPVPAPER_BIN = None
+    _processes = {}
+
+    @classmethod
+    def _find_wpe(cls):
+        if cls._WPE_BIN:
+            return cls._WPE_BIN
+        for p in ["/opt/linux-wallpaperengine/linux-wallpaperengine", "/usr/local/bin/wpe/linux-wallpaperengine"]:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                try:
+                    subprocess.run([p, "--help"], capture_output=True, timeout=3)
+                    cls._WPE_BIN = p
+                    return p
+                except Exception:
+                    continue
+        return None
+
+    @classmethod
+    def _find_mpvpaper(cls):
+        if cls._MPVPAPER_BIN:
+            return cls._MPVPAPER_BIN
+        for p in [shutil.which("mpvpaper"), "/usr/local/bin/mpvpaper"]:
+            if p and os.path.isfile(p) and os.access(p, os.X_OK):
+                cls._MPVPAPER_BIN = p
+                return p
+        return None
+
+    @classmethod
+    def _get_monitors(cls):
+        try:
+            result = subprocess.run(["xrandr", "--listmonitors"], capture_output=True, text=True)
+            monitors = []
+            for line in result.stdout.strip().split('\n')[1:]:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    monitors.append(parts[1].lstrip('+'))
+            return monitors
+        except Exception:
+            return []
+
+    @classmethod
+    def _stop_monitor(cls, monitor):
+        procs = cls._processes.pop(monitor, [])
+        for p in procs:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+    @staticmethod
+    def apply_wallpaper(wallpaper, monitor="*"):
+        targets = []
+        if monitor and monitor != "*":
+            targets = [monitor]
+        else:
+            targets = WallpaperManager._get_monitors()
+
+        for t in targets:
+            WallpaperManager._stop_monitor(t)
+
+        if wallpaper.wallpaper_type == "video":
+            mpv = WallpaperManager._find_mpvpaper()
+            if not mpv:
+                return False
+            path = wallpaper.media_path or wallpaper.folder_path
+            display = monitor if (monitor and monitor != "*") else "*"
+            cmd = [mpv, "-o", "loop", "--input-ipc-server=/tmp/mpvpaper-ipc", display, path]
+            p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            WallpaperManager._processes.setdefault(display, []).append(p)
+        else:
+            wpe = WallpaperManager._find_wpe()
+            if not wpe:
+                return False
+            targets_wpe = targets if targets else WallpaperManager._get_monitors()
+            for i, m in enumerate(targets_wpe):
+                args = ["--screen-root", m]
+                if i > 0:
+                    args.append("--silent")
+                args.append(wallpaper.folder_path)
+                p = subprocess.Popen(
+                    [wpe] + args,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                WallpaperManager._processes.setdefault(m, []).append(p)
+        return True
+
+    @staticmethod
+    def apply_from_config(config):
+        monitors = WallpaperManager._get_monitors()
+        wallpapers = {w.folder_path: w for w in WallpaperScanner.scan_wallpapers()}
+        wallpaper_by_title = {w.title: w for w in wallpapers.values()}
+
+        for entry in config.get("wallpapers", []):
+            wp = wallpaper_by_title.get(entry.get("title"))
+            if not wp:
+                continue
+            monitor = entry.get("monitor", "*")
+            if monitor != "*" and monitor not in monitors:
+                continue
+            WallpaperManager.apply_wallpaper(wp, monitor)
+
+    @staticmethod
+    def _get_wallpaper_sink_inputs():
+        env = os.environ.copy()
+        env['LANG'] = 'C'
+        result = subprocess.run(['pactl', 'list', 'sink-inputs'], capture_output=True, text=True, env=env)
+        lines = result.stdout.split('\n')
+        current_index = None
+        current_is_wallpaper = False
+        found = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('Sink Input #'):
+                if current_index is not None and current_is_wallpaper:
+                    found.append(current_index)
+                try:
+                    current_index = stripped.split('#')[1].strip()
+                except (IndexError, ValueError):
+                    current_index = None
+                current_is_wallpaper = False
+            elif current_index is not None:
+                lower = stripped.lower()
+                if any(k in lower for k in ['node.name', 'application.name', 'media.name']):
+                    if any(app in lower for app in ['mpv', 'mpvpaper', 'linux-wallpaperengine']):
+                        current_is_wallpaper = True
+        if current_index is not None and current_is_wallpaper:
+            found.append(current_index)
+        return found
+
+    @staticmethod
+    def toggle_mute():
+        for idx in WallpaperManager._get_wallpaper_sink_inputs():
+            subprocess.run(['pactl', 'set-sink-input-mute', idx, 'toggle'], capture_output=True)
+
+    @staticmethod
+    def set_mute(muted):
+        val = '1' if muted else '0'
+        for idx in WallpaperManager._get_wallpaper_sink_inputs():
+            subprocess.run(['pactl', 'set-sink-input-mute', idx, val], capture_output=True)
+
+    @staticmethod
+    def is_muted():
+        env = os.environ.copy()
+        env['LANG'] = 'C'
+        for idx in WallpaperManager._get_wallpaper_sink_inputs():
+            result = subprocess.run(['pactl', 'list', 'sink-inputs'], capture_output=True, text=True, env=env)
+            current = None
+            for line in result.stdout.split('\n'):
+                s = line.strip()
+                if s.startswith('Sink Input #'):
+                    try:
+                        current = s.split('#')[1].strip()
+                    except (IndexError, ValueError):
+                        current = None
+                elif current == idx and ('mute: yes' in s.lower() or 'mute: sim' in s.lower()):
+                    return True
+        return False
+
+    @staticmethod
+    def stop():
+        for monitor, procs in list(WallpaperManager._processes.items()):
+            for p in procs:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        WallpaperManager._processes.clear()
+        try:
+            os.remove('/tmp/mpvpaper-ipc')
+        except OSError:
+            pass
+
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"wallpapers": [], "apply_on_boot": False}
+
+
+def save_config(config):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+
+
+def set_autostart(enabled):
+    os.makedirs(AUTOSTART_DIR, exist_ok=True)
+    if enabled:
+        script_path = os.path.abspath(__file__)
+        run_sh = os.path.join(os.path.dirname(script_path), "run.sh")
+        content = f"""[Desktop Entry]
+Type=Application
+Name=PopWallpaper
+Exec=bash -c 'sleep 5 && "{run_sh}" --apply-only'
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+"""
+        with open(AUTOSTART_FILE, 'w') as f:
+            f.write(content)
+    else:
+        if os.path.exists(AUTOSTART_FILE):
+            os.remove(AUTOSTART_FILE)
+
 
 class PopWallpaperApp(ctk.CTk):
-    """Interfaz Gráfica Principal"""
-    
     def __init__(self):
         super().__init__()
         self.title("PopWallpaper Manager")
         self.geometry("1000x600")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        
+
+        self.config = load_config()
         self.wallpapers = []
         self.current_wallpaper = None
+        self.is_muted = False
+        self._ready = False
+        self.monitors = WallpaperManager._get_monitors()
         self.create_ui()
-        
-        # Al cerrar la ventana, NO matamos el proceso (el lanzador se encarga)
+
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
+        self.bind("<FocusIn>", self.on_focus_in)
+        self.bind("<FocusOut>", self.on_focus_out)
+
+        self.check_wpe_installed()
         self.load_wallpapers()
-    
+        self._ready = True
+
+    def check_wpe_installed(self):
+        if WallpaperManager._find_wpe():
+            return
+        self.after(500, lambda: messagebox.showwarning(
+            "linux-wallpaperengine not found",
+            "linux-wallpaperengine is not installed.\n\n"
+            "Scene and Web wallpapers require it.\n"
+            "Run setup.sh or install manually."
+        ))
+
     def create_ui(self):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        
-        # Sidebar
+
         self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=0)
         self.sidebar.grid(row=0, column=0, rowspan=2, sticky="nsew")
         self.sidebar.grid_rowconfigure(1, weight=1)
-        
+
         ctk.CTkLabel(self.sidebar, text="Wallpapers", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=20, pady=20)
         self.wallpaper_list = ctk.CTkScrollableFrame(self.sidebar, width=260)
         self.wallpaper_list.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        ctk.CTkButton(self.sidebar, text="🔄 Refresh List", command=self.load_wallpapers).grid(row=2, column=0, padx=20, pady=20)
-        
-        # Main Area
+        ctk.CTkButton(self.sidebar, text="🔄 Refresh List", command=self.load_wallpapers).grid(row=2, column=0, padx=20, pady=(10, 5))
+
+        controls_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        controls_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        controls_frame.grid_columnconfigure(0, weight=1)
+        controls_frame.grid_columnconfigure(1, weight=1)
+
+        self.mute_btn = ctk.CTkButton(
+            controls_frame, text="🔊 Unmuted",
+            fg_color="#2b8a3e", hover_color="#237032",
+            command=self.toggle_mute
+        )
+        self.mute_btn.grid(row=0, column=0, padx=(5, 2), pady=5, sticky="ew")
+
+        self.stop_btn = ctk.CTkButton(
+            controls_frame, text="⏹ Stop",
+            fg_color="#a11d1d", hover_color="#7a1616",
+            command=self.stop_wallpaper
+        )
+        self.stop_btn.grid(row=0, column=1, padx=(2, 5), pady=5, sticky="ew")
+
+        monitor_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        monitor_frame.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+        ctk.CTkLabel(monitor_frame, text="Monitor:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
+        monitor_names = ["All"] + self.monitors
+        self.monitor_var = ctk.StringVar(value=monitor_names[0])
+        self.monitor_menu = ctk.CTkOptionMenu(
+            monitor_frame, variable=self.monitor_var,
+            values=monitor_names, width=260
+        )
+        self.monitor_menu.pack(fill="x", padx=5)
+
+        filter_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        filter_frame.grid(row=5, column=0, padx=10, pady=(0, 5), sticky="ew")
+
+        ctk.CTkLabel(filter_frame, text="Filter:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
+        self.filter_var = ctk.StringVar(value="All Types")
+        self.filter_menu = ctk.CTkOptionMenu(
+            filter_frame, variable=self.filter_var,
+            values=["All Types", "🎬 Video", "🎨 Scene", "🌐 Web"],
+            command=lambda _: self.reload_list(),
+            width=260
+        )
+        self.filter_menu.pack(fill="x", padx=5)
+
+        self.boot_var = ctk.BooleanVar(value=self.config.get("apply_on_boot", False))
+        self.boot_check = ctk.CTkCheckBox(
+            self.sidebar, text="Apply on boot",
+            variable=self.boot_var, command=self._toggle_boot
+        )
+        self.boot_check.grid(row=6, column=0, padx=20, pady=(5, 10), sticky="w")
+
         self.main_panel = ctk.CTkFrame(self, corner_radius=0)
         self.main_panel.grid(row=0, column=1, sticky="nsew")
         self.main_panel.grid_rowconfigure(1, weight=1)
         self.main_panel.grid_columnconfigure(0, weight=1)
-        
-        # ✅ FIX: Title Label con wrapping para nombres largos
+
         self.title_label = ctk.CTkLabel(
-            self.main_panel, 
-            text="Select a wallpaper", 
+            self.main_panel, text="Select a wallpaper",
             font=ctk.CTkFont(size=24, weight="bold"),
-            wraplength=680,  # Máximo ancho antes de word wrap
-            justify="center"
+            wraplength=680, justify="center"
         )
         self.title_label.grid(row=0, column=0, padx=40, pady=(40, 20), sticky="ew")
-        
+
         self.preview_frame = ctk.CTkFrame(self.main_panel)
         self.preview_frame.grid(row=1, column=0, padx=40, pady=20, sticky="nsew")
         self.preview_frame.grid_rowconfigure(0, weight=1)
         self.preview_frame.grid_columnconfigure(0, weight=1)
-        
+
         self.preview_label = ctk.CTkLabel(self.preview_frame, text="No preview available")
         self.preview_label.grid(row=0, column=0, sticky="nsew")
-        
-        self.apply_btn = ctk.CTkButton(self.main_panel, text="Apply Wallpaper", font=ctk.CTkFont(size=18, weight="bold"), height=50, command=self.apply_current_wallpaper, state="disabled")
+
+        self.apply_btn = ctk.CTkButton(
+            self.main_panel, text="Apply Wallpaper",
+            font=ctk.CTkFont(size=18, weight="bold"), height=50,
+            command=self.apply_current_wallpaper, state="disabled"
+        )
         self.apply_btn.grid(row=2, column=0, padx=40, pady=40)
-        
+
         self.status_bar = ctk.CTkLabel(self, text="Ready", anchor="w")
         self.status_bar.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+
+    def _toggle_boot(self):
+        enabled = self.boot_var.get()
+        self.config["apply_on_boot"] = enabled
+        save_config(self.config)
+        set_autostart(enabled)
 
     def load_wallpapers(self):
         self.status_bar.configure(text="Scanning...")
         self.update()
-        for w in self.wallpaper_list.winfo_children(): w.destroy()
-        
         self.wallpapers = WallpaperScanner.scan_wallpapers()
-        if not self.wallpapers:
-            self.status_bar.configure(text="No wallpapers found")
+        self.reload_list()
+
+    def reload_list(self):
+        for w in self.wallpaper_list.winfo_children():
+            w.destroy()
+
+        filter_text = self.filter_var.get()
+        filtered = self.wallpapers
+        if filter_text == "🎬 Video":
+            filtered = [w for w in self.wallpapers if w.wallpaper_type == 'video']
+        elif filter_text == "🎨 Scene":
+            filtered = [w for w in self.wallpapers if w.wallpaper_type == 'scene']
+        elif filter_text == "🌐 Web":
+            filtered = [w for w in self.wallpapers if w.wallpaper_type == 'web']
+
+        if not filtered:
+            self.status_bar.configure(text="No wallpapers found" + (f" ({filter_text})" if filter_text != "All Types" else ""))
             return
 
-        for wp in self.wallpapers:
+        for wp in filtered:
             frame = ctk.CTkFrame(self.wallpaper_list, fg_color="transparent")
-            frame.pack(fill="x", padx=5, pady=5)
-            
+            frame.pack(fill="x", padx=5, pady=2)
+
             thumb = None
             if wp.preview_path and os.path.exists(wp.preview_path):
                 try:
                     img = Image.open(wp.preview_path)
-                    # ✅ FIX: Si es GIF, extraer primer frame para thumbnail
                     if img.format == 'GIF':
                         img.seek(0)
                         img = img.convert('RGB')
                     img.thumbnail((50, 50), Image.Resampling.LANCZOS)
                     thumb = ctk.CTkImage(light_image=img, dark_image=img, size=(50, 50))
-                except: pass
-            
-            
-            # ✅ FIX: Truncar texto largo en sidebar
-            display_name = truncate_text(wp.title, max_length=35)
-            
+                except:
+                    pass
+
+            display_name = f"{wp.type_badge}  {truncate_text(wp.title, max_length=30)}"
             btn = ctk.CTkButton(
-                frame, 
-                text=display_name, 
-                image=thumb, 
-                compound="left", 
-                anchor="w", 
-                height=60 if thumb else 30,
+                frame, text=display_name, image=thumb, compound="left",
+                anchor="w", height=60 if thumb else 35,
                 command=lambda w=wp: self.select_wallpaper(w)
             )
             btn.pack(fill="x")
-            
-            # ⚠️ NOTA: tooltip_text NO existe en customtkinter
-            # La app crasheaba con: btn.configure(tooltip_text=wp.title)
-            # Por ahora, tooltip deshabilitado hasta encontrar solución alternativa
-        
-        self.status_bar.configure(text=f"Found {len(self.wallpapers)} wallpapers")
+
+        self.status_bar.configure(text=f"Found {len(filtered)} wallpapers" + (f" ({filter_text})" if filter_text != "All Types" else ""))
 
     def select_wallpaper(self, wp):
-        """Selecciona un wallpaper y actualiza el preview (soporta JPG, PNG, GIF)"""
         self.current_wallpaper = wp
-        self.title_label.configure(text=wp.title)
+        self.title_label.configure(text=f"{wp.type_badge}  {wp.title}")
         self.apply_btn.configure(state="normal")
-        
+
         if wp.preview_path and os.path.exists(wp.preview_path):
             try:
-                # Abrir la imagen (puede ser JPG, PNG, GIF, etc.)
                 img = Image.open(wp.preview_path)
-                
-                # ✅ FIX: Si es GIF, extraer solo el primer frame
                 if img.format == 'GIF':
-                    img.seek(0)  # Ir al primer frame
-                    img = img.convert('RGB')  # Convertir a RGB para compatibilidad
-                
-                # Calcular escala manteniendo proporción
+                    img.seek(0)
+                    img = img.convert('RGB')
                 orig_w, orig_h = img.size
-                scale = min(700/orig_w, 350/orig_h)
-                new_size = (int(orig_w*scale), int(orig_h*scale))
-                
-                # Redimensionar imagen
+                scale = min(700 / orig_w, 350 / orig_h)
+                new_size = (int(orig_w * scale), int(orig_h * scale))
                 img_resized = img.resize(new_size, Image.Resampling.LANCZOS)
-                
-                # Crear CTkImage y almacenar referencia
                 self.preview_image = ctk.CTkImage(
-                    light_image=img_resized, 
-                    dark_image=img_resized, 
-                    size=new_size
+                    light_image=img_resized, dark_image=img_resized, size=new_size
                 )
-                
-                # Configurar imagen en el label
                 self.preview_label.configure(image=self.preview_image, text="")
-                
-                # ✅ CRÍTICO: Forzar actualización del widget
                 self.preview_label.update_idletasks()
                 self.preview_label.update()
-                
-            except Exception as e:
-                print(f"Error loading preview: {e}")
+            except Exception:
                 self.preview_label.configure(image=None, text="Preview error")
                 self.preview_label.update()
         else:
-            # Sin preview disponible
             self.preview_image = None
             self.preview_label.configure(image=None, text="No preview")
             self.preview_label.update()
-        
-        # Actualizar barra de estado
-        self.status_bar.configure(text=f"Selected: {wp.title}")
+
+        self.status_bar.configure(text=f"Selected: {wp.title} ({wp.type_badge})")
 
     def apply_current_wallpaper(self):
         if self.current_wallpaper:
-            if WallpaperManager.apply_wallpaper(self.current_wallpaper.file_path):
-                self.status_bar.configure(text=f"Applied: {self.current_wallpaper.title}")
-                # Opcional: Mostrar mensaje de éxito
-                # messagebox.showinfo("Success", "Wallpaper applied!")
+            monitor_val = self.monitor_var.get()
+            monitor = None if monitor_val == "All" else monitor_val
+            if WallpaperManager.apply_wallpaper(self.current_wallpaper, monitor):
+                self.status_bar.configure(text=f"Applied: {self.current_wallpaper.title} on {monitor_val}")
+                self.is_muted = False
+                self.update_mute_button()
+                self._save_to_config(self.current_wallpaper, monitor_val)
+            else:
+                self.status_bar.configure(text=f"FAILED: {self.current_wallpaper.title}")
+
+    def _save_to_config(self, wp, monitor_val):
+        wallpapers = self.config.get("wallpapers", [])
+        if monitor_val == "All":
+            self.config["wallpapers"] = [{"title": wp.title, "folder_path": wp.folder_path, "monitor": m} for m in self.monitors]
+        else:
+            wallpapers = [w for w in wallpapers if w.get("monitor") != monitor_val]
+            wallpapers.append({"title": wp.title, "folder_path": wp.folder_path, "monitor": monitor_val})
+            self.config["wallpapers"] = wallpapers
+        save_config(self.config)
+
+    def toggle_mute(self):
+        WallpaperManager.toggle_mute()
+        self.is_muted = not self.is_muted
+        self.update_mute_button()
+
+    def update_mute_button(self):
+        if self.is_muted:
+            self.mute_btn.configure(text="🔇 Muted", fg_color="#a11d1d", hover_color="#7a1616")
+        else:
+            self.mute_btn.configure(text="🔊 Unmuted", fg_color="#2b8a3e", hover_color="#237032")
+
+    def stop_wallpaper(self):
+        WallpaperManager.stop()
+        self.status_bar.configure(text="Wallpaper stopped")
+
+    def on_focus_in(self, event=None):
+        if not self._ready:
+            return
+        if self.is_muted:
+            WallpaperManager.set_mute(False)
+            self.is_muted = False
+            self.update_mute_button()
+
+    def on_focus_out(self, event=None):
+        if not self._ready:
+            return
+        if self.focus_get() is None:
+            WallpaperManager.set_mute(True)
+            self.is_muted = True
+            self.update_mute_button()
 
     def on_closing(self):
         self.destroy()
 
+
+def apply_only_mode():
+    config = load_config()
+    if not config.get("apply_on_boot"):
+        return
+    if not config.get("wallpapers"):
+        return
+    WallpaperManager.apply_from_config(config)
+
+
 if __name__ == "__main__":
-    app = PopWallpaperApp()
-    app.mainloop()
+    if "--apply-only" in sys.argv:
+        apply_only_mode()
+    else:
+        app = PopWallpaperApp()
+        app.mainloop()
