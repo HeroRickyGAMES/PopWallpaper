@@ -404,7 +404,7 @@ class PopWallpaperApp(ctk.CTk):
         self.monitor_menu.pack(fill="x", padx=5)
 
         audio_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        audio_frame.grid(row=4, column=0, padx=10, pady=(0, 5), sticky="ew")
+        audio_frame.grid(row=5, column=0, padx=10, pady=(0, 5), sticky="ew")
 
         ctk.CTkLabel(audio_frame, text="Audio Monitor:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
         audio_names = ["None"] + self.monitors
@@ -418,7 +418,7 @@ class PopWallpaperApp(ctk.CTk):
         self.audio_menu.pack(fill="x", padx=5)
 
         filter_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        filter_frame.grid(row=5, column=0, padx=10, pady=(0, 5), sticky="ew")
+        filter_frame.grid(row=6, column=0, padx=10, pady=(0, 5), sticky="ew")
 
         ctk.CTkLabel(filter_frame, text="Filter:", font=ctk.CTkFont(size=13)).pack(anchor="w", padx=5)
         self.filter_var = ctk.StringVar(value="All Types")
@@ -435,7 +435,14 @@ class PopWallpaperApp(ctk.CTk):
             self.sidebar, text="Apply on boot",
             variable=self.boot_var, command=self._toggle_boot
         )
-        self.boot_check.grid(row=6, column=0, padx=20, pady=(5, 10), sticky="w")
+        self.boot_check.grid(row=7, column=0, padx=20, pady=(5, 10), sticky="w")
+
+        self.pause_unfocus_var = ctk.BooleanVar(value=self.config.get("pause_on_unfocus", False))
+        self.pause_check = ctk.CTkCheckBox(
+            self.sidebar, text="Pause without focus",
+            variable=self.pause_unfocus_var, command=self._toggle_pause_unfocus
+        )
+        self.pause_check.grid(row=8, column=0, padx=20, pady=(0, 10), sticky="w")
 
         self.main_panel = ctk.CTkFrame(self, corner_radius=0)
         self.main_panel.grid(row=0, column=1, sticky="nsew")
@@ -469,6 +476,10 @@ class PopWallpaperApp(ctk.CTk):
 
     def _on_audio_monitor_change(self, value):
         self.config["audio_monitor"] = value
+        save_config(self.config)
+
+    def _toggle_pause_unfocus(self):
+        self.config["pause_on_unfocus"] = self.pause_unfocus_var.get()
         save_config(self.config)
 
     def _toggle_boot(self):
@@ -601,13 +612,18 @@ class PopWallpaperApp(ctk.CTk):
         if self._focus_after_id is not None:
             self.after_cancel(self._focus_after_id)
             self._focus_after_id = None
-        if self.is_muted:
+        if self.pause_unfocus_var.get():
+            WallpaperManager.apply_from_config(self.config)
+        elif self.is_muted:
             WallpaperManager.set_mute(False)
             self.is_muted = False
             self.update_mute_button()
 
     def on_focus_out(self, event=None):
         if not self._ready:
+            return
+        if self.pause_unfocus_var.get():
+            WallpaperManager.stop()
             return
         if self._focus_after_id is not None:
             self.after_cancel(self._focus_after_id)
