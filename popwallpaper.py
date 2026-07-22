@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import time
+import signal
 import shutil
 import subprocess
 import customtkinter as ctk
@@ -108,6 +109,7 @@ class WallpaperManager:
     _WPE_BIN = None
     _MPVPAPER_BIN = None
     _processes = {}
+    _daemon_proc = None
 
     @classmethod
     def _find_wpe(cls):
@@ -192,6 +194,7 @@ class WallpaperManager:
                     start_new_session=True
                 )
                 WallpaperManager._processes.setdefault(m, []).append(p)
+        WallpaperManager._ensure_daemon()
         return True
 
     @staticmethod
@@ -269,7 +272,28 @@ class WallpaperManager:
         return False
 
     @staticmethod
+    def _ensure_daemon():
+        if WallpaperManager._daemon_proc and WallpaperManager._daemon_proc.poll() is None:
+            return
+        daemon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pause_daemon.py")
+        WallpaperManager._daemon_proc = subprocess.Popen(
+            [sys.executable, daemon_path],
+            start_new_session=True
+        )
+
+    @staticmethod
+    def _stop_daemon():
+        if WallpaperManager._daemon_proc and WallpaperManager._daemon_proc.poll() is None:
+            WallpaperManager._daemon_proc.terminate()
+            try:
+                WallpaperManager._daemon_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                WallpaperManager._daemon_proc.kill()
+            WallpaperManager._daemon_proc = None
+
+    @staticmethod
     def stop():
+        WallpaperManager._stop_daemon()
         for monitor, procs in list(WallpaperManager._processes.items()):
             for p in procs:
                 try:
@@ -573,6 +597,7 @@ class PopWallpaperApp(ctk.CTk):
         self.status_bar.configure(text="Wallpaper stopped")
 
     def on_closing(self):
+        WallpaperManager._stop_daemon()
         self.destroy()
 
 
@@ -583,6 +608,11 @@ def apply_only_mode():
     if not config.get("wallpapers"):
         return
     WallpaperManager.apply_from_config(config)
+    WallpaperManager._ensure_daemon()
+    try:
+        signal.pause()
+    except (KeyboardInterrupt, AttributeError):
+        WallpaperManager._stop_daemon()
 
 
 if __name__ == "__main__":
