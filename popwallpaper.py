@@ -123,8 +123,11 @@ class WallpaperManager:
     def _find_wpe(cls):
         if cls._WPE_BIN:
             return cls._WPE_BIN
-        for p in ["/opt/linux-wallpaperengine/linux-wallpaperengine", "/usr/local/bin/wpe/linux-wallpaperengine"]:
-            if os.path.isfile(p) and os.access(p, os.X_OK):
+        candidates = [shutil.which("linux-wallpaperengine"),
+                      "/opt/linux-wallpaperengine/linux-wallpaperengine",
+                      "/usr/local/bin/wpe/linux-wallpaperengine"]
+        for p in candidates:
+            if p and os.path.isfile(p) and os.access(p, os.X_OK):
                 try:
                     subprocess.run([p, "--help"], capture_output=True, timeout=3)
                     cls._WPE_BIN = p
@@ -438,6 +441,15 @@ if __name__ == "__main__":
                 )
                 self.stop_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
+                muted = WallpaperManager.is_muted()
+                self.mute_btn = ctk.CTkButton(
+                    controls_frame,
+                    text="🔊 Unmute" if muted else "🔇 Mute",
+                    fg_color="#4a4a4a", hover_color="#333333",
+                    command=self.toggle_mute
+                )
+                self.mute_btn.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
                 monitor_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
                 monitor_frame.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
 
@@ -628,6 +640,12 @@ if __name__ == "__main__":
             def stop_wallpaper(self):
                 WallpaperManager.stop()
                 self.status_bar.configure(text="Wallpaper stopped")
+
+            def toggle_mute(self):
+                WallpaperManager.toggle_mute()
+                muted = WallpaperManager.is_muted()
+                self.mute_btn.configure(text="🔊 Unmute" if muted else "🔇 Mute")
+                self.status_bar.configure(text="Muted" if muted else "Unmuted")
 
             def on_closing(self):
                 self.destroy()
