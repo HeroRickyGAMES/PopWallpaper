@@ -142,20 +142,11 @@ class WallpaperManager:
         if cls._WPE_BIN:
             return cls._WPE_BIN
         candidates = [shutil.which("linux-wallpaperengine"),
+                      "/usr/local/bin/linux-wallpaperengine",
                       "/opt/linux-wallpaperengine/linux-wallpaperengine",
-                      "/usr/local/bin/wpe/linux-wallpaperengine",
-                      "/usr/local/bin/linux-wallpaperengine"]
-        wpe_env = cls._get_wpe_env()
+                      "/usr/local/bin/wpe/linux-wallpaperengine"]
         for p in candidates:
             if p and os.path.isfile(p) and os.access(p, os.X_OK):
-                try:
-                    result = subprocess.run([p, "--help"], capture_output=True, timeout=5, env=wpe_env)
-                    if result.returncode == 0 or b"linux-wallpaperengine" in (result.stdout + result.stderr):
-                        cls._WPE_BIN = p
-                        return p
-                except Exception:
-                    continue
-                # Binary exists but --help fails — still cache it, launch will use LD_LIBRARY_PATH
                 cls._WPE_BIN = p
                 return p
         return None
